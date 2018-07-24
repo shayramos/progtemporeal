@@ -16,13 +16,20 @@
 
 SemaphoreHandle_t xSerialSemaphore;
 
+QueueHandle_t queueTemperatura;
+QueueHandle_t queueVazao;
+
 // define two Tasks for DigitalRead & AnalogRead
 void TaskLeituraVazao( void *pvParameters );
 void TaskLeituraTemperatura( void *pvParameters );
 void TaskMonitorSeguranca( void *pvParameters );
 void TaskCalculador( void *pvParameters );
+
 int valorTemperatura = 0;
 int valorVazao = 0;
+int valorValvula = 100;
+const int temperaturaLimite = 80;
+
 
  
 // the setup function runs once when you press reset or power the board
@@ -43,6 +50,14 @@ void setup() {
     xSerialSemaphore = xSemaphoreCreateMutex();  // Create a mutex semaphore we will use to manage the Serial Port
     if ( ( xSerialSemaphore ) != NULL )
       xSemaphoreGive( ( xSerialSemaphore ) );  // Make the Serial Port available for use, by "Giving" the Semaphore.
+  }
+
+  if (queueTemperatura == NULL) {
+    queueTemperatura = xQueueCreate(1, 2); //criando uma queue de short (só um lugar de memória pra ter uma variável compartilhada)
+  }
+
+  if (queueVazao == NULL) {
+    queueVazao = xQueueCreate(1, 2); //criando uma queue de short
   }
 
 
@@ -104,11 +119,11 @@ void TaskLeituraTemperatura( void *pvParameters __attribute__((unused)) )
     if ( xSemaphoreTake( xSerialSemaphore, ( TickType_t ) 5 ) == pdTRUE )
     {
       Serial.println(sensorValue1);
-
       xSemaphoreGive( xSerialSemaphore );
+      xQueueSendToFront(queueTemperatura, sensorValue1, 100);
     }
 
-    vTaskDelay(10); 
+    vTaskDelay(20); 
   }
 }
 
@@ -125,11 +140,11 @@ void TaskLeituraVazao( void *pvParameters __attribute__((unused)) )
     if ( xSemaphoreTake( xSerialSemaphore, ( TickType_t ) 5 ) == pdTRUE ) 
     {
       Serial.println(sensorValue0);
-
       xSemaphoreGive( xSerialSemaphore ); // Now free or "Give" the Serial Port for others.
+      xQueueSendToFront(queueVazao, sensorValue0, 100);
     }
-
-    vTaskDelay(10);  // one tick delay (15ms) in between reads for stability
+    
+    vTaskDelay(20);  // one tick delay (15ms) in between reads for stability
   }
 }
 
@@ -138,19 +153,23 @@ Task que faz o calculo
 */
 void TaskCalculador( void *pvParameters __attribute__((unused)) )  
 {
-
+  int currentVazao = 0;
+  int currentTemp = 0;
+  int err;
+  int saida;
   for (;;)
   {
-    //int sensorValue = analogRead(A1);
-
-    if ( xSemaphoreTake( xSerialSemaphore, ( TickType_t ) 5 ) == pdTRUE ) 
-    {
-     // Serial.println(sensorValue);
-
-      xSemaphoreGive( xSerialSemaphore ); // Now free or "Give" the Serial Port for others.
+    err = xQueueReceive(queueTemperatura, &currentTemp, 20);
+    if (err == pdPASS) {
+      err = xQueueReceive(queueVazao, &currentVazao, 20);
+      if (err == pdPASS) {
+        valorTemperatura = 100 - (int)(((float)currentTemp/0x3FF)*100);
+        valorVazao = (int)(((float)currentVazao/0x3FF)*100);
+        saida = (currentTemp + currentVazao)/2; //sei la
+        valorValvula = saida;
+      }
     }
-
-    vTaskDelay(10);  // one tick delay (15ms) in between reads for stability
+    vTaskDelay(80);
   }
 }
 
@@ -162,15 +181,10 @@ void TaskMonitorSeguranca( void *pvParameters __attribute__((unused)) )
 
   for (;;)
   {
-    //int sensorValue = analogRead(A2);
-
-    if ( xSemaphoreTake( xSerialSemaphore, ( TickType_t ) 5 ) == pdTRUE )
-    {
-      //Serial.println(sensorValue);
-
-      xSemaphoreGive( xSerialSemaphore ); // Now free or "Give" the Serial Port for others.
+    if (valorTemperatura > temperaturaLimite) {
+      //ligar alarme?
     }
-
-    vTaskDelay(10);  // one tick delay (15ms) in between reads for stability
+    
+    vTaskDelay(20);  // one tick delay (15ms) in between reads for stability
   }
 }
