@@ -24,13 +24,14 @@ SemaphoreHandle_t xSecuritySemaphore;
 QueueHandle_t queueTemperatura;
 QueueHandle_t queueVazao;
 QueueHandle_t queueSecurity;
-xTaskHandle handleCalculadora;
+QueueHandle_t queueToOutput;
+TaskHandle_t handleCalculadora;
 
-// define two Tasks for DigitalRead & AnalogRead
 void TaskLeituraVazao( void *pvParameters );
 void TaskLeituraTemperatura( void *pvParameters );
 void TaskMonitorSeguranca( void *pvParameters );
 void TaskCalculador( void *pvParameters );
+void TaskOutput (void * pvParameters );
 
 int valorTemperatura = 0;
 int valorVazao = 0;
@@ -45,9 +46,7 @@ void setup() {
   // initialize serial communication at 9600 bits per second:
   Serial.begin(9600);
   
-  while (!Serial) {
-    ; // wait for serial port to connect. Needed for native USB, on LEONARDO, MICRO, YUN, and other 32u4 based boards.
-  }
+  while (!Serial);
 
   // Semaphores are useful to stop a Task proceeding, where it should be paused to wait,
   // because it is sharing a resource, such as the Serial port.
@@ -57,6 +56,12 @@ void setup() {
     xSerialSemaphore = xSemaphoreCreateMutex();  // Create a mutex semaphore we will use to manage the Serial Port
     if ( ( xSerialSemaphore ) != NULL )
       xSemaphoreGive( ( xSerialSemaphore ) );  // Make the Serial Port available for use, by "Giving" the Semaphore.
+  }
+  if ( xSecuritySemaphore == NULL ) 
+  {
+    xSecuritySemaphore = xSemaphoreCreateMutex(); 
+    if ( ( xSecuritySemaphore ) != NULL )
+      xSemaphoreGive( ( xSecuritySemaphore ) ); 
   }
 
   if (queueTemperatura == NULL) {
@@ -71,7 +76,7 @@ void setup() {
 
   if (queueSecurity = NULL){
     queueSecurity = xQueueCreate(1,sizeof(int));
-    if (!queueSecurity) Serial.prinln("Não conseguiu criar a queue para security");
+    if (!queueSecurity) Serial.println("Não conseguiu criar a queue para security");
   }
   
   xTaskCreate(
@@ -124,19 +129,18 @@ Task que faz a leitura da temperatura
 */
 void TaskLeituraTemperatura( void *pvParameters __attribute__((unused)) )  
 {
-
+  const TickType_t period = 25;
+  TickType_t lastWakeTime;
+  int sensorValue1;
   for (;;)
   {
-    int sensorValue1 = analogRead(A1);
+    lastWakeTime = xTaskGetTickCount();
+    sensorValue1 = analogRead(A1);
+    sensorValue1 = (int)(((float)(sensorValue1)/1023)*100);
+    xQueueSendToFront(queueTemperatura, &sensorValue1, 100);
 
-    if ( xSemaphoreTake( xSerialSemaphore, ( TickType_t ) 5 ) == pdTRUE )
-    {
-      int err;
-      xSemaphoreGive( xSerialSemaphore );
-      xQueueSendToFront(queueTemperatura, &sensorValue1, 100);
-    }
 
-    vTaskDelay(100); 
+    vTaskDelayUntil(&lastWakeTime, period); 
   }
 }
 
@@ -145,20 +149,18 @@ Task que faz a leitura da vazão
 */
 void TaskLeituraVazao( void *pvParameters __attribute__((unused)) )  
 {
-
+  const TickType_t period = 25;
+  TickType_t lastWakeTime;
+  int sensorValue0;
   for (;;)
   {
-    int sensorValue0 = analogRead(A0);
+    lastWakeTime = xTaskGetTickCount();
+    sensorValue0 = analogRead(A0);
+    sensorValue0 = (int)(((float)(sensorValue0)/1023)*100);
+    xQueueSendToFront(queueVazao, &sensorValue0, 100);
 
-    if ( xSemaphoreTake( xSerialSemaphore, ( TickType_t ) 5 ) == pdTRUE ) 
-    {
-     // Serial.println(sensorValue0);
-   
-      xSemaphoreGive( xSerialSemaphore ); // Now free or "Give" the Serial Port for others.
-      xQueueSendToFront(queueVazao, &sensorValue0, 100);
-    }
     
-    vTaskDelay(100);  // one tick delay (15ms) in between reads for stability
+    vTaskDelayUntil(&lastWakeTime, period);
   }
 }
 
@@ -170,33 +172,41 @@ void TaskCalculador( void *pvParameters __attribute__((unused)) )
   int currentVazao = 0;
   int currentTemp = 0;
   int saida;
+  const TickType_t period = 25;
+  TickType_t lastWakeTime;
   for (;;)
   {
-    int err;
-    err = xQueueReceive(queueTemperatura, &currentTemp, 20);
-    if (err == pdPASS) {
-      err = xQueueReceive(queueVazao, &currentVazao, 20);
+    lastWakeTime = xTaskGetTickCount();
+    if (xSemaphoreTake(xSecuritySemaphore, ( TickType_t ) 5) == pdTRUE) {
+      int err;
+      err = xQueueReceive(queueTemperatura, &currentTemp, 20);
       if (err == pdPASS) {
-        valorTemperatura =(int)(((float)(currentTemp-59)/1021)*100);
-        valorVazao = (int)(((float)currentVazao/1023)*100);
-        saida =  (valorTemperatura*valorTemperatura - valorVazao)/120 ; //sei la
-        valorValvula = saida;
-        if ( xSemaphoreTake( xSerialSemaphore, ( TickType_t ) 5 ) == pdTRUE ) {
-          Serial.println("Temperatura:");
-          Serial.println(valorTemperatura);
-          Serial.println("Vazão");
-          Serial.println(valorVazao);
-          Serial.println("Valor valvula");
-          Serial.println(valorValvula);
-        
+        err = xQueueReceive(queueVazao, &currentVazao, 20);
+        if (err == pdPASS) {
+          valorTemperatura = currentTemp;
+          valorVazao = currentVazao;
+          saida =  (valorTemperatura*valorTemperatura - valorVazao)/120 ; //sei la
+          valorValvula = saida;
           
-          xSemaphoreGive( xSerialSemaphore );
+          
+          if ( xSemaphoreTake( xSerialSemaphore, ( TickType_t ) 5 ) == pdTRUE ) {
+            Serial.println((const char*)"Temperatura:");
+            Serial.println(valorTemperatura);
+            Serial.println("Vazão");
+            Serial.println(valorVazao);
+            Serial.println("Valor valvula");
+            Serial.println(valorValvula);
+          
+            
+            xSemaphoreGive( xSerialSemaphore );
+          }
+          
+          
         }
-        
-        
       }
+      xSemaphoreGive(xSecuritySemaphore);
     }
-    vTaskDelay(100);
+   vTaskDelayUntil(&lastWakeTime, period);
   }
 }
 
@@ -205,19 +215,57 @@ Task que faz o calculo
 */
 void TaskMonitorSeguranca( void *pvParameters __attribute__((unused)) )  
 {
+  const TickType_t period = 25;
+  TickType_t lastWakeTime;
+  int currentTemp, currentVazao;
 
   for (;;)
   {
-    
-    if ( xSemaphoreTake( xSecuritySemaphore, ( TickType_t ) 5 ) == pdTRUE ) {
-      while (valorTemperatura > temperaturaLimite) {
+    lastWakeTime = xTaskGetTickCount();
+    if (valorTemperatura > temperaturaLimite) {
+      if ( xSemaphoreTake( xSecuritySemaphore, ( TickType_t ) 5 ) == pdTRUE ) {
         vTaskSuspend( handleCalculadora );
-       }
-     }
-     vTaskResume(handleCalculadora);
+        valorValvula = 100;
+        int err;
+        err = xQueueReceive(queueTemperatura, &currentTemp, 20);
+        if (err == pdPASS) {
+          err = xQueueReceive(queueVazao, &currentVazao, 20);
+          if (err == pdPASS) {
+            valorTemperatura = currentTemp;
+            valorVazao = currentVazao;
+            if ( xSemaphoreTake( xSerialSemaphore, ( TickType_t ) 5 ) == pdTRUE ) {
+              Serial.println((const char*)"Temperatura:");
+              Serial.println(valorTemperatura);
+              Serial.println("Vazão");
+              Serial.println(valorVazao);
+              Serial.println("Valor valvula");
+              Serial.println(valorValvula);
+          
+            
+            xSemaphoreGive( xSerialSemaphore );
+          }
+        }
+        }
+      }
+      xSemaphoreGive(xSecuritySemaphore);
      
+    }
+    if (valorTemperatura <= temperaturaLimite) {
+        vTaskResume(handleCalculadora);
+    }
     
-    
-    vTaskDelay(10);  // one tick delay (15ms) in between reads for stability
+    vTaskDelayUntil(&lastWakeTime, period);
   }
 }
+
+void TaskOutput( void *pvParameters __attribute__((unused)) )  {
+  const TickType_t period = 25;
+  TickType_t lastWakeTime;
+  for (;;) {
+    lastWakeTime = xTaskGetTickCount();
+
+    vTaskDelayUntil(&lastWakeTime, period);
+  }
+  
+}
+
